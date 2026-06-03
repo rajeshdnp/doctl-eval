@@ -12,7 +12,6 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
-  ErrorBar,
 } from "recharts";
 import { ConfusionMatrix } from "./ConfusionMatrix";
 import { MetricsPanel } from "./MetricsPanel";

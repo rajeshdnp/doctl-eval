@@ -3,17 +3,17 @@
 # 2. python-builder: installs Python deps in a layer-cached stage
 # 3. runtime: slim final image with non-root user and HEALTHCHECK
 
-# ── Stage 1: Build React frontend ────────────────────────────────────────────
-FROM node:20-alpine AS frontend-builder
+# ── Stage 1: Frontend (pre-built locally) ────────────────────────────────────
+# The React app is built locally (npm run build in frontend/) and the dist/
+# directory is committed to the repo. We use a minimal copy stage here.
+# Why: The Docker host may be configured with an internal npm registry that
+# is not reachable from inside the build container. Building locally avoids
+# this and keeps the Docker build hermetic for the Python layers.
+# If you want to build inside Docker, run: cd frontend && npm install && npm run build
+# before docker build, which this COPY stage will then pick up.
+FROM busybox:latest AS frontend-builder
 WORKDIR /app/frontend
-
-# Install deps first (cached layer — only re-runs if package*.json changes)
-COPY frontend/package*.json ./
-RUN npm ci --silent
-
-# Build
-COPY frontend/ ./
-RUN npm run build
+COPY frontend/dist/ ./dist/
 
 
 # ── Stage 2: Install Python dependencies ─────────────────────────────────────
@@ -52,12 +52,13 @@ COPY config.yaml ./
 # These are committed to the repo (required deliverables) and are static —
 # the container can serve the recommendation and sweep view without any
 # runtime data fetch.
+# Run the pipeline first:
+#   python -m src.ingestion.github
+#   python -m src.ground_truth.builder
+#   python scripts/run_sweep.py
 # Note: individual cache files (data/cache/) are NOT baked in — they are
 # gitignored and should be mounted as a volume for persistence across restarts.
-COPY data/issues.json ./data/
-COPY data/issues.sha256 ./data/
-COPY data/ground_truth.json ./data/
-COPY data/sweep_results.json ./data/
+COPY data/ ./data/
 
 # Writable dirs for runtime artifacts — owned by appuser
 RUN mkdir -p data/cache data/runs data/manifests && \
