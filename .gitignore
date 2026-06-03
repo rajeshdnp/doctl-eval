@@ -1,0 +1,30 @@
+# Secrets — never commit
+.env
+
+# Large generated cache — rebuild is free and deterministic
+data/cache/
+data/runs/
+data/manifests/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.venv-clean/
+venv/
+dist/
+build/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.pytest_cache/
+
+# Node
+node_modules/
+frontend/dist/
+
+# OS
+.DS_Store

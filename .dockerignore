@@ -1,0 +1,13 @@
+.env
+.git
+.venv
+.venv-clean
+node_modules
+__pycache__
+data/cache
+*.pyc
+.mypy_cache
+tests/
+.ruff_cache
+htmlcov/
+.coverage

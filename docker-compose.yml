@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file: .env
+    environment:
+      # CONCURRENCY overrides the value in .env if set here
+      # Change this without rebuilding the image — Principle 3
+      CONCURRENCY: ${CONCURRENCY:-10}
+    volumes:
+      # Cache and runs persist across container restarts
+      # This avoids re-running expensive inference after a container restart
+      - ./data/cache:/app/data/cache
+      - ./data/runs:/app/data/runs
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health')",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

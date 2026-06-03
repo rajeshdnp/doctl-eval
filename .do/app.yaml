@@ -1,0 +1,25 @@
+name: doctl-eval
+region: nyc
+
+services:
+  - name: web
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: YOUR_GITHUB_HANDLE/doctl-eval
+      branch: main
+      deploy_on_push: true
+    http_port: 8080
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    health_check:
+      http_path: /api/health
+    envs:
+      - key: MODEL_ACCESS_KEY
+        scope: RUN_TIME
+        type: SECRET
+        # Set this via: doctl apps create --env MODEL_ACCESS_KEY=<your_key>
+      - key: CONCURRENCY
+        scope: RUN_TIME
+        value: "10"
+        # Overrideable at runtime — no rebuild needed (Principle 3)

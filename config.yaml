@@ -1,0 +1,31 @@
+models:
+  sweep: []          # Populated in Stage 1 after verifying live slugs
+  default_a: ""
+  default_b: ""
+
+inference:
+  temperature: 0.0   # Deterministic outputs. At higher temp, format error rate spikes.
+  max_tokens: 256    # Labels + short reasoning. 256 is generous; keeps costs predictable.
+  prompt_version: "v1"
+  concurrency: 10    # Runtime override via CONCURRENCY env var
+
+github:
+  repo: "digitalocean/doctl"
+  per_page: 100
+
+pricing:
+  # Per 1M tokens — input and output priced SEPARATELY.
+  # These are reference rates; verify current pricing at https://inference.do-ai.run/v1/models
+  # before a production run. The RunManifest captures the snapshot used for each run.
+  anthropic-claude-haiku-4.5:
+    input: 1.00
+    output: 5.00
+  llama3.3-70b-instruct:
+    input: 0.65
+    output: 0.65
+  openai-gpt-oss-120b:
+    input: 0.10
+    output: 0.70
+  openai-gpt-oss-20b:
+    input: 0.05
+    output: 0.45
