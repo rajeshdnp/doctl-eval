@@ -6,8 +6,8 @@ services:
     dockerfile_path: Dockerfile
     source_dir: /
     github:
-      repo: YOUR_GITHUB_HANDLE/doctl-eval
-      branch: main
+      repo: rajeshdnp/doctl-eval
+      branch: master
       deploy_on_push: true
     http_port: 8080
     instance_size_slug: basic-xxs
