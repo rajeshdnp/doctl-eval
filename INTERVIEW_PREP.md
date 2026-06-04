@@ -7,6 +7,354 @@
 
 ---
 
+## DATA CONTRACTS: EVERY INPUT AND OUTPUT IN THE SYSTEM
+
+Understanding exactly what data flows through each stage is how you answer
+"walk me through the code" without hesitation. Every example below is real
+data from the actual sweep.
+
+### Stage 1: GitHub API → Issue object
+
+**Raw GitHub API response (one field per line, fields we keep):**
+```json
+{
+  "id": 637226066,
+  "number": 825,
+  "title": "doctl auth init error",
+  "body": "**Describe the Issue:**\n\nAm trying to execute doctl commands with php...\n[truncated to 2000 chars]",
+  "labels": [{"name": "bug", "color": "d73a4a"}, ...],
+  "state": "open",
+  "created_at": "2021-08-12T10:22:00Z",
+  "updated_at": "2021-08-15T14:05:00Z"
+}
+```
+
+**After ingestion → Issue Pydantic model (fields kept):**
+```json
+{
+  "id": 637226066,
+  "number": 825,
+  "title": "doctl auth init error",
+  "body": "Am trying to execute doctl commands with php but am getting some errors...",
+  "labels": ["bug"],
+  "state": "open",
+  "created_at": "2021-08-12T10:22:00Z",
+  "updated_at": "2021-08-15T14:05:00Z"
+}
+```
+
+**Fields dropped:** url, html_url, user (author), assignees, milestone, comments, reactions, pull_request
+**Why body is truncated to 2000 chars:** Code dumps in long bodies add tokens, not signal. Average body after truncation: 1013 chars for scored issues.
+
+---
+
+### Stage 2: Issue → Prompt → Model → Classification
+
+**What goes INTO the model (Issue #825):**
+```
+SYSTEM:  [classify_v1.txt — 400+ tokens]
+         Task framing + 6 label definitions + 2 few-shot examples + output format
+
+USER:    Issue #825: doctl auth init error
+
+         **Describe the Issue:**
+         Am trying to execute doctl commands with php but am getting some errors.
+         everything is working well from the terminal.
+         I have tried `doctl auth init` using php `$result = exec("doctl auth init");`
+         and am getting error `Error: neither $XDG_CONFIG_HOME nor $HOME are defined...`
+```
+
+**What comes OUT — llama3.3-70b (correct):**
+```json
+{
+  "label": "bug",
+  "reasoning": "The reporter is encountering an error when trying to execute the doctl auth init
+    command using PHP, specifically receiving an error about undefined environment variables,
+    which indicates unexpected behavior and a potential issue with the command's execution
+    in a non-terminal environment."
+}
+```
+
+**What comes OUT — gpt-oss-120b (wrong):**
+```json
+{
+  "label": "question",
+  "reasoning": "The reporter is asking why `doctl auth init` fails when invoked from PHP and
+    how to resolve the missing environment variables, which is a usage question rather than
+    a defect in doctl itself."
+}
+```
+
+**Ground truth label:** `bug` (confidence 1.0 — single unambiguous maintainer label)
+
+**This is the canonical disagreement example. Know it cold.**
+- llama3.3 sees: unexpected behavior when running from PHP → bug
+- gpt-oss-120b sees: reporter asking how to fix → question
+- Ground truth: it IS a bug — doctl should handle non-terminal environments gracefully
+- The distinction matters in production: a "question" gets routed to docs; a "bug" gets a fix
+
+---
+
+### Stage 3: Classification → Cache file
+
+**Stored as:** `data/cache/637226066__llama3.3-70b-instruct__e6f64d56950718a2.json`
+
+**Format:** `{issue_id}__{model_slug}__{prompt_hash[:16]}.json`
+
+**Full Classification object (what's saved):**
+```json
+{
+  "issue_id": 637226066,
+  "model": "llama3.3-70b-instruct",
+  "prompt_version": "v1",
+  "label": "bug",
+  "reasoning": "The reporter is encountering an error...",
+  "raw_response": "{\"label\": \"bug\", \"reasoning\": \"The reporter is encountering...\"}",
+  "prompt_tokens": 787,
+  "completion_tokens": 59,
+  "cost_usd": 0.000550,
+  "latency_ms": 3788,
+  "attempt_count": 1,
+  "error_type": null,
+  "from_cache": false
+}
+```
+
+**Cost formula (traceable to every field):**
+```
+cost_usd = (prompt_tokens × input_rate + completion_tokens × output_rate) / 1_000_000
+         = (787 × 0.65 + 59 × 0.65) / 1_000_000
+         = (511.55 + 38.35) / 1_000_000
+         = $0.000550
+```
+
+**What a parse error looks like (max_tokens truncation):**
+```json
+{
+  "raw_response": "{\n  \"reasoning\": \"The reporter is asking how to accomplish a task (",
+  "completion_tokens": 256,
+  "label": null,
+  "error_type": "parse_error"
+}
+```
+Note: `completion_tokens = 256` = exactly max_tokens. Truncated mid-JSON. This is ALL 33 parse errors on gpt-oss-120b. Fixed by raising max_tokens to 512.
+
+---
+
+### Stage 4: GitHub labels → Ground truth
+
+**Input: raw maintainer labels → `map_label()` → (label, confidence)**
+
+```
+["bug"]                   → ("bug", 1.0)      unambiguous
+["suggestion"]            → ("enhancement", 1.0)  doctl uses "suggestion" not "feature"
+["app-platform", "bug"]   → ("bug", 0.7)      meta label reduces confidence
+["do-api"]                → (None, 0.0)       routing label only, excluded
+[]                        → (None, 0.0)       unlabeled ≠ other
+["bug", "suggestion"]     → (None, 0.0)       conflicting, excluded
+```
+
+**Output: ground_truth.json record (issue #825):**
+```json
+{
+  "id": 637226066,
+  "number": 825,
+  "title": "doctl auth init error",
+  "labels": ["bug"],
+  "ground_truth_label": "bug",
+  "gt_confidence": 1.0
+}
+```
+
+**Corpus split:**
+```
+Total: 530 issues
+  Scored:   247 (46.6%) — ground_truth_label assigned
+  Unscored: 283 (53.4%) — classified by models but not scored against GT
+```
+
+---
+
+### Stage 5: All classifications → Scoring → Metrics
+
+**Input:** list of Classification objects + ground truth pairs `[(issue_id, label), ...]`
+
+**Output: compute_model_metrics() returns:**
+```json
+{
+  "model": "llama3.3-70b-instruct",
+  "n_scored": 247,
+  "n_correct": 208,
+  "overall_accuracy": 0.842,
+  "accuracy_ci": {"lower": 0.791, "upper": 0.882, "method": "wilson"},
+  "per_class": {
+    "bug":           {"f1": 0.864, "support": 133, "f1_ci_lower": 0.815, "f1_ci_upper": 0.909},
+    "enhancement":   {"f1": 0.901, "support":  77, "f1_ci_lower": 0.841, "f1_ci_upper": 0.947},
+    "question":      {"f1": 0.545, "support":  11, "f1_ci_lower": 0.285, "f1_ci_upper": 0.733},
+    "security":      {"f1": 0.963, "support":  26, "f1_ci_lower": 0.902, "f1_ci_upper": 1.000},
+    "documentation": {"f1": 0.000, "support":   0},
+    "other":         {"f1": 0.000, "support":   0}
+  },
+  "macro_f1": 0.546,
+  "active_macro_f1": 0.818,
+  "n_active_classes": 4,
+  "confusion_matrix_raw": {
+    "bug":           {"bug": 109, "enhancement": 6, "question": 9, "security": 2, ...},
+    "enhancement":   {"bug": 3, "enhancement": 61, "question": 4, ...},
+    ...
+  },
+  "cost_per_correct_classification": 0.00075,
+  "security_warning": null
+}
+```
+
+**McNemar comparison output:**
+```json
+{
+  "agreement_rate": 0.953,
+  "cohens_kappa": 0.931,
+  "mcnemar": {
+    "p_value": 0.182,
+    "is_significant": false,
+    "verdict": "No statistically significant difference (p=0.182)"
+  },
+  "disagreements": [
+    {
+      "issue_id": 637226066,
+      "issue_number": 825,
+      "title": "doctl auth init error",
+      "model_a_label": "bug",
+      "model_b_label": "question",
+      "ground_truth_label": "bug",
+      "model_a_reasoning": "The reporter is encountering an error...",
+      "model_b_reasoning": "The reporter is asking why doctl auth init fails..."
+    }
+  ]
+}
+```
+
+---
+
+### Stage 6: API endpoints
+
+**GET /api/health**
+```json
+{"status": "ok", "corpus_loaded": true, "sweep_available": true,
+ "corpus_size": 530, "scored_size": 247}
+```
+
+**GET /api/models** (populates the dropdowns)
+```json
+[
+  {"slug": "llama3.3-70b-instruct", "display_name": "Llama 3.3 70B",
+   "input_price_per_1m": 0.65, "output_price_per_1m": 0.65, "role": "frontier_baseline"},
+  {"slug": "openai-gpt-oss-120b",   "display_name": "GPT OSS 120B",
+   "input_price_per_1m": 0.10, "output_price_per_1m": 0.70, "role": "open_source"},
+  ...
+]
+```
+
+**POST /api/run** (request body)
+```json
+{"model_a": "llama3.3-70b-instruct", "model_b": "openai-gpt-oss-120b", "concurrency": 10}
+```
+
+**POST /api/run** (SSE event stream — one line per event)
+```
+data: {"type":"progress","model":"llama3.3-70b-instruct","completed":50,"total":530,"current_cost":0.0302}
+data: {"type":"progress","model":"llama3.3-70b-instruct","completed":530,"total":530,"current_cost":0.3192}
+data: {"type":"done","run_id":"abc12345","total_cost":0.4237}
+```
+
+**GET /api/results/{run_id}** (structure)
+```json
+{
+  "run_id": "abc12345",
+  "manifest": {
+    "git_sha": "77235f6",
+    "model_a": "llama3.3-70b-instruct",
+    "model_b": "openai-gpt-oss-120b",
+    "prompt_hash": "e6f64d56950718a2",
+    "dataset_fingerprint": "134d424ef385...",
+    "concurrency": 10,
+    "temperature": 0.0,
+    "pricing_table": {"llama3.3-70b-instruct": {"input": 0.65, "output": 0.65}, ...}
+  },
+  "scored": {
+    "model_a": { ...metrics for model_a... },
+    "model_b": { ...metrics for model_b... },
+    "comparison": { ...McNemar, kappa, disagreements... }
+  },
+  "unscored": {
+    "agreement_rate": 0.89,
+    "per_class_distributions": {"model_a": {"bug": 180, ...}, "model_b": {...}},
+    "disagreements": [...]
+  },
+  "operational": {
+    "model_a": {
+      "p50_latency_ms": 3412, "p95_latency_ms": 4530,
+      "concurrency": 10,
+      "total_cost_usd": 0.3192, "avg_cost_per_call_usd": 0.000602,
+      "cost_per_correct_classification": 0.00075,
+      "error_rate": 0.0, "cache_hit_rate": 0.0,
+      "error_breakdown": {}
+    }
+  }
+}
+```
+
+**GET /api/results/{run_id}/issue/{issue_id}/raw** (for debugging a specific classification)
+```json
+{
+  "issue": {"id": 637226066, "number": 825, "title": "doctl auth init error", ...},
+  "model_a_raw": "{\"label\": \"bug\", \"reasoning\": \"The reporter is encountering...\"}",
+  "model_b_raw": "{\"label\": \"question\", \"reasoning\": \"The reporter is asking...\"}",
+  "model_a_label": "bug",
+  "model_b_label": "question"
+}
+```
+
+---
+
+### Stage 7: sweep_results.json (the committed deliverable)
+
+```json
+{
+  "metadata": {
+    "sweep_date": "2026-06-04T00:26:47Z",
+    "models_evaluated": ["llama3.3-70b-instruct", "openai-gpt-oss-120b",
+                          "openai-gpt-oss-20b", "deepseek-r1-distill-llama-70b"],
+    "dataset_fingerprint": "134d424ef385410a...",
+    "prompt_version": "v1",
+    "total_issues": 530,
+    "scored_issues": 247
+  },
+  "recommendation": {
+    "model_a": "openai-gpt-oss-120b",
+    "model_b": "openai-gpt-oss-20b",
+    "frontier_baseline": "llama3.3-70b-instruct",
+    "cost_savings_vs_frontier_pct": 67.27,
+    "accuracy_delta_vs_frontier_pct": -0.73,
+    "rationale": "openai-gpt-oss-120b achieves 83.5% accuracy (-0.7% vs frontier...) ..."
+  },
+  "model_summaries": [
+    {
+      "model": "openai-gpt-oss-120b",
+      "accuracy": 0.835,
+      "effective_accuracy": 0.775,
+      "macro_f1": 0.542,
+      "avg_cost_usd": 0.000197,
+      "cost_per_correct_classification": 0.00024,
+      "p50_ms": 2194,
+      "p95_ms": 3912,
+      "error_rate": 0.072
+    }
+  ]
+}
+```
+
+---
+
 ## ROLE CONTEXT: WHAT FDE MEANS AT THIS LEVEL
 
 An FDE at Staff/Principal level is expected to:
