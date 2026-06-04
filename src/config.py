@@ -63,7 +63,12 @@ class Config(BaseSettings):
     )
 
     # Secrets — from env only, never in config.yaml
-    model_access_key: str = Field(description="DigitalOcean Serverless Inference API key")
+    # Optional at startup so /api/health, /api/models, /api/sweep work without a key.
+    # Routes that call the inference API will raise a clear error if key is missing.
+    model_access_key: str = Field(
+        default="",
+        description="DigitalOcean Serverless Inference API key (required for /api/run)",
+    )
     github_token: str | None = Field(
         default=None,
         description="GitHub PAT (optional — avoids 60/hr unauthenticated rate limit)",

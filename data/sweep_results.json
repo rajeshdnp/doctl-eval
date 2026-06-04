@@ -67,12 +67,12 @@
     }
   ],
   "recommendation": {
-    "model_a": "openai-gpt-oss-20b",
-    "model_b": "openai-gpt-oss-120b",
-    "frontier_baseline": "deepseek-r1-distill-llama-70b",
-    "cost_savings_vs_frontier_pct": 82.01,
-    "accuracy_delta_vs_frontier_pct": -4.62,
-    "rationale": "openai-gpt-oss-20b achieves 87.7% accuracy (-4.6% vs frontier deepseek-r1-distill-llama-70b) at 18% of frontier cost. Cost per correct classification: $0.00015 vs frontier $0.00076."
+    "model_a": "openai-gpt-oss-120b",
+    "model_b": "openai-gpt-oss-20b",
+    "frontier_baseline": "llama3.3-70b-instruct",
+    "cost_savings_vs_frontier_pct": 67.27,
+    "accuracy_delta_vs_frontier_pct": -0.73,
+    "rationale": "openai-gpt-oss-120b achieves 83.5% accuracy (-0.7% vs frontier llama3.3-70b-instruct) at 33% of frontier cost. Cost per correct classification: $0.00024 vs frontier $0.00075. Effective accuracy 77.5% (83.5% \u00d7 92.8% coverage) vs frontier 84.2%."
   },
   "full_results": {
     "llama3.3-70b-instruct": [
