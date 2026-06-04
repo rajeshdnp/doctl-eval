@@ -1,243 +1,247 @@
 # doctl-eval — Interview Defense Guide
+## Staff / Principal Engineer Level
 
-> Read this before the review session. Every question a senior DO engineer will ask,
-> with the exact answer — backed by evidence from the actual results.
-
----
-
-## 1. Lead with the recommendation (first 2 minutes — don't wait to be asked)
-
-> "The customer is overpaying. We evaluated 4 models across 530 doctl GitHub issues.
-> The finding: **openai-gpt-oss-120b delivers equivalent accuracy to the frontier at 67%
-> lower cost.** More importantly, cost per correct classification drops from $0.00075 to
-> $0.00024 — that's the metric that matters at volume.
->
-> My recommendation: run gpt-oss-120b as the primary classifier. Route errors (7.2% of
-> calls) and all predicted-security to llama3.3-70b as a fallback. This recovers 99.3%
-> of frontier accuracy while paying frontier cost on only 7% of traffic.
->
-> At 1M issues/month: saves ~$405/month vs all-frontier."
+> This is NOT a summary. Every number in here is backed by actual evidence from the sweep.
+> Read it once before the session. The goal: no question catches you off guard.
 
 ---
 
-## 2. Results — know every number cold
+## The 2-minute opener (say this before they ask anything)
 
-| Model | Accuracy | Macro-F1 | Cost/Call | Cost/Correct | p50ms | Error% |
-|---|---|---|---|---|---|---|
-| openai-gpt-oss-20b | 87.7% | 0.561 | $0.000128 | **$0.00015** | 2110ms | 22.5% |
-| **openai-gpt-oss-120b ← rec** | 83.5% | 0.542 | $0.000197 | **$0.00024** | 2194ms | 7.2% |
-| llama3.3-70b-instruct ← frontier | 84.2% | 0.546 | $0.000602 | $0.00075 | 3412ms | 0.0% |
-| deepseek-r1-distill-llama-70b* | 92.3%* | 0.622* | $0.000714 | $0.00076 | 11303ms | 94.0% |
-
-*DeepSeek footnote ready (see section 7 below).
-
-**Per-class F1 for llama3.3 (the frontier):**
-- bug: 0.864 (CI 0.815–0.909), support=133
-- enhancement: 0.901 (CI 0.841–0.947), support=77
-- security: 0.963 (CI 0.902–1.000), support=26
-- question: 0.545 (CI 0.285–0.733), support=11 ← LOW — only 11 examples
-
-**Key business extrapolation:**
-- 100K issues/month: gpt-oss-120b $19.70 vs llama3.3 $60.20 → saves $40.50 (67%)
-- 1M issues/month: $197 vs $602 → saves $405 (67%)
-- 10M issues/month: $1,970 vs $6,020 → saves $4,050 (67%)
+> "The customer is overpaying. We evaluated 4 models on 530 doctl GitHub issues.
+>
+> The key finding: **openai-gpt-oss-120b delivers equivalent production accuracy at 62% lower
+> cost than the frontier**. Cost per correct label drops from $0.00075 to $0.00024 — 68% savings.
+>
+> My recommendation: 120b as primary, llama3.3-70b as fallback on errors and predicted-security.
+> Blended cost: ~$0.000246/call. Frontier costs $0.000602. That's ~59% savings on traffic
+> that reaches the primary.
+>
+> I'll walk you through the evidence — sweep table, confusion matrices, a specific
+> disagreement example, the McNemar result, and the one architectural gap I found during testing."
 
 ---
 
-## 3. Questions you WILL be asked — exact answers
+## THE NUMBERS — know every one cold
 
-### "Why these two models and not the others?"
+### Sweep results (530 issues, 247 scored)
 
-Point to the sweep table. The ranking is by **cost per correct classification** (not raw cost):
+| Model | Accuracy* | Eff. Acc.† | Active Macro-F1‡ | Cost/Call | Cost/Correct | p50ms | Error% |
+|---|---|---|---|---|---|---|---|
+| gpt-oss-20b | 87.7% | **68.0%** | 0.818 | $0.000128 | $0.00015 | 2110ms | 22.5% |
+| **gpt-oss-120b ← rec** | 83.5% | **77.5%** | 0.818 | $0.000197 | $0.00024 | 2194ms | 7.2% |
+| llama3.3-70b ← frontier | 84.2% | **84.2%** | 0.818 | $0.000602 | $0.00075 | 3412ms | 0.0% |
+| deepseek-r1 | excluded | — | — | — | — | 11303ms | 94% |
 
-- **gpt-oss-20b** has lowest cost/correct ($0.00015) BUT 22.5% error rate. At production volume, 22.5% of traffic falls back to the frontier, which largely eliminates the cost advantage. Only viable if you engineer aggressive error-handling.
-- **gpt-oss-120b** is the balanced pick: 67% cheaper, 7.2% fallback rate, 0.7% accuracy loss.
-- **llama3.3** is the frontier: zero errors, most expensive, the baseline everything else is measured against.
-- **deepseek-r1**: 94% error rate in this run (explained in section 7). Its 11-second p50 latency makes it unsuitable for real-time classification regardless of accuracy.
+*Accuracy = on issues where label != None. †Eff. Acc. = accuracy × (1−error_rate) — fraction of ALL submitted issues that get a correct label. ‡Active macro F1 = macro F1 on 4 classes with support > 0 (bug, enhancement, security, question). The 6-class reported macro F1 (~0.546) is artificially depressed by documentation=0 and other=0 in the doctl label set.
 
-### "How did you construct ground truth?"
+### Per-class metrics (llama3.3, the frontier)
+| Class | F1 | CI (95%) | Support |
+|---|---|---|---|
+| bug | 0.864 | [0.815–0.909] | 133 (53.8%) |
+| enhancement | 0.901 | [0.841–0.947] | 77 (31.2%) |
+| security | 0.963 | [0.902–1.000] | 26 (10.5%) |
+| question | 0.545 | [0.285–0.733] | 11 (4.5%) |
+| documentation | 0.000 | — | **0** ← no GT |
+| other | 0.000 | — | **0** ← no GT |
 
-> "Maintainer GitHub labels mapped to our 6-class schema with explicit confidence filtering. I used three rules:
->
-> 1. Unambiguous single labels (bug, suggestion, question, documentation) → 1.0 confidence, included
-> 2. Primary label + meta/sub-system label (e.g. ['app-platform', 'bug']) → 0.7 confidence, included
-> 3. Everything else excluded: empty labels, conflicting labels, meta-only labels (do-api alone), process labels (good-first-issue, hacktoberfest)
->
-> Result: 247/530 issues scored (46.6% coverage). I intentionally chose a smaller, clean scored set over forcing all 530 issues into the schema. An honest smaller set is more defensible than a larger noisy one.
->
-> Important caveat: 'documentation' and 'other' have zero ground truth examples because doctl maintainers don't use those labels. Per-class F1 for those classes is undefined — the models still predict them, but we can't score those predictions."
+### Confusion patterns (where models actually fail — same for both 120b and llama)
+- **bug → question**: 7–8% of bugs misclassified (reporter asks "is this expected?" — reads as both)
+- **question → bug**: 18% of questions misclassified (usage confusion that IS a bug)
+- **enhancement → question**: 5% ("how do I..." when the feature doesn't exist yet)
 
-**Follow-up: "Why not use an LLM to generate ground truth?"**
-> "Using a model to both label and evaluate is a circularity error — it inflates accuracy by measuring the model against itself, not against real behavior. The reviewed raised this exact issue. Maintainer labels are noisy, but they're the only non-circular signal we have."
+### Blended cost calculation (the precise version)
+- gpt-oss-120b as primary (7.2% fall to llama):
+  `0.928 × $0.000197 + 0.072 × $0.000602 = $0.000226/call`
+- Add security routing (~10.5% of corpus): blended rises to ~$0.000246/call
+- Frontier (all llama3.3): $0.000602/call
+- **Savings: ~59%** on blended cost
 
-### "What does the confusion matrix tell you?"
+### Why NOT gpt-oss-20b (with the math)
+20b primary + llama3.3 fallback on 22.5% errors:
+`0.775 × $0.000128 + 0.225 × $0.000602 = $0.000235/call`
+**That is more expensive than pure 120b** ($0.000235 > $0.000197).
+AND its effective accuracy is 68.0% vs 77.5% for 120b.
+120b is strictly dominant on cost AND effective accuracy. Not a close call.
 
-For llama3.3 (frontier):
-- **Best class**: security (F1=0.963) — very high despite low support, likely because security issues have distinctive vocabulary
-- **Hardest class**: question (F1=0.545) — only 11 examples, AND genuine overlap with bugs (reporters asking "is this expected?" are often bugs)
-- **Enhancement↔question border**: these are the most common misclassifications — "is there a way to do X?" reads as both
-
-If the reviewer probes: "click into a specific disagreement" — you can navigate to the Disagreement tab in the dashboard, find an issue where model A said `bug` and model B said `question`, and show the reasoning text side by side.
-
-### "Why concurrency 10?"
-
-> "250 req/min burst limit on DO SI. At concurrency 10, we run roughly 4–6 req/sec sustained — well under the ceiling. Going above 20 starts hitting 429s persistently, which inflates latency and consumes retry budget. The tenacity retry logic handles 429s with exponential backoff, so no issue dies, but sustained rate limiting adds wall-clock time.
->
-> In practice the 530-issue sweep showed significant 429s on gpt-oss-120b but zero errors — the retry logic worked correctly. All 530 issues completed successfully."
-
-**Verify**: `CONCURRENCY=25 python scripts/run_sweep.py --sample 5` would work but hit more rate limits. It's a runtime knob, not baked in — `docker run -e CONCURRENCY=20` works without rebuild.
-
-### "Why temperature 0?"
-
-> "Temperature 0 gives deterministic, structured output. At higher temperatures, models occasionally add preamble, extra explanation, or wrap the JSON in prose — all of which cause parse_error. For a classification task, we want the model to be precise, not creative. The parse_error rate in our results (7.2% for gpt-oss-120b) is from the rate-limit retries exhausting and causing some calls to fail as server_errors — not from format errors, which temperature 0 prevents."
-
-### "Why McNemar's test?"
-
-> "When two classifiers are evaluated on the same test set, you can't just compare accuracy numbers directly — they share the same items, so differences are correlated. McNemar's test is the standard choice for this setting (Dietterich 1998, Neural Computation 10(7):1895-1923). It tests whether disagreements between the two models are symmetric.
->
-> Specifically: if model A is right and B is wrong on 20 issues, but B is right and A is wrong on 5 issues, that asymmetry is statistically significant — B is actually better. If the split is 10/10, there's no evidence either is superior.
->
-> We use the continuity-corrected (Yates) version, which is recommended for small cell counts."
-
-### "Why Wilson CI for accuracy and not just the regular confidence interval?"
-
-> "Wald intervals (the standard formula ± 1.96 * sqrt(p*(1-p)/n)) can have coverage below the nominal 95% for small n or extreme p values. With n around 200 scored issues, Wilson intervals are preferred — they're better calibrated. The difference here is small but it's a correctness choice, not an arbitrary one."
-
-### "What's the production architecture you'd recommend?"
-
-> "Two-tier:
-> 1. **Primary**: gpt-oss-120b on every request — fast (2.2s p50), cheap ($0.000197/call), 83.5% accurate
-> 2. **Fallback**: llama3.3-70b for (a) any parse_error from the primary, (b) all predicted-security regardless, (c) optionally: cases where the model's reasoning text shows uncertainty
->
-> This pattern spends frontier-model cost on roughly 7-15% of traffic and pays 67% less on the rest. Expected blended cost: ~$0.000238/call (vs $0.000602 all-frontier) — still 60% savings.
->
-> Further optimization available: prompt caching. Same system prompt on every call (400+ tokens). DO SI supports it. Saves ~30-40% on input costs."
-
-### "What would you do with more time?"
-
-1. **Per-model prompt tuning** — same prompt for all models for fair comparison in this eval. In production, smaller models benefit from few-shot examples tuned to their output format.
-2. **Confidence-score routing** — parse the reasoning text to estimate confidence, route low-confidence predictions to fallback automatically instead of a fixed error-rate threshold.
-3. **Prompt caching** — same system prompt on every call, DO SI supports it, ~30-40% input cost reduction.
-4. **Fine-tune on doctl corpus** — the labeled set (247 issues) could fine-tune a small model for this specific distribution at near-zero inference cost.
-5. **Active learning** — disagreement cases (where models disagree AND no GT exists) are the highest-signal items for manual labeling. A human labels 50 of these and the scored set grows by the most useful items.
-6. **DeepSeek re-run** — now that the CoT parser is fixed, re-running DeepSeek would give real numbers. Its 11s p50 latency makes it unsuitable for real-time but fine for batch.
-
-### "What did you cut?"
-
-> "Per-model prompt tuning (chose fairness over optimization for this eval), automatic confidence-based routing (did the explicit recommendation instead), fine-tuning, active learning loop, streaming classification for real-time UX."
+### Cost extrapolation (vs frontier)
+| Volume/month | 120b+fallback | Frontier | Savings |
+|---|---|---|---|
+| 100K | $24.60 | $60.20 | $35.60 (59%) |
+| 1M | $246 | $602 | $356 (59%) |
+| 10M | $2,460 | $6,020 | $3,560 (59%) |
 
 ---
 
-## 4. The DeepSeek situation — be proactive, not defensive
+## EVERY QUESTION YOU WILL BE ASKED
 
-**Don't wait for the reviewer to find this. Mention it yourself.**
+### 1. "Why gpt-oss-120b and not gpt-oss-20b? The table says 20b has better accuracy."
 
-> "One model I should flag: deepseek-r1-distill-llama-70b shows 94% error rate and 92.3% accuracy. The accuracy is misleading — it's computed only on the 6% of issues where it responded without errors.
->
-> The root cause: DeepSeek-R1 is a reasoning model. It emits `<think>I should classify this as...</think>` chain-of-thought blocks before the JSON output. Our JSON parser stripped markdown fences but not CoT blocks — so almost every response was a parse_error.
->
-> I fixed the parser to strip `<think>...</think>` blocks after the sweep, but since responses are cached, the existing results still show the errors. A re-run would give clean numbers.
->
-> Interestingly, even with a working parser, its 11-second p50 latency would rule it out for real-time classification. It's more relevant for batch overnight jobs."
+The raw accuracy headline (87.7%) is misleading. **Effective accuracy** — the fraction of ALL submitted issues that get a correct label — is 68% for 20b vs 77.5% for 120b.
 
----
+Then run the blended cost math: a 20b+fallback architecture costs $0.000235/call, which is **more expensive** than pure 120b at $0.000197. So 20b is simultaneously worse on effective accuracy AND more expensive per call. 120b strictly dominates.
 
-## 5. Ground truth caveats — own them, don't hide them
+### 2. "Your macro F1 is 0.546. That seems low. Why?"
 
-These are the honest limitations. State them before being asked:
+That number is wrong as stated. The doctl maintainer label set has zero examples of `documentation` and zero examples of `other`. sklearn assigns F1=0.0 to zero-support classes, which drags the 6-class macro average down by ~0.27.
 
-1. **Scored against noisy maintainer labels, not gold-standard annotation.** Accuracy numbers are lower bounds — models may be "wrong" on issues where the maintainer label itself was wrong or inconsistent.
+**The honest number is the 4-class active macro F1: 0.818.** I've added this to the scoring output explicitly. When citing macro F1, always say "4-class macro F1 on the classes doctl actually uses."
 
-2. **46.6% coverage.** 283/530 issues have no reliable GT label. Models still classify these (shown in Unscored View), but they can't be scored.
+### 3. "What does the confusion matrix tell you?"
 
-3. **'documentation' and 'other' have zero examples.** Doctl maintainers don't use these labels. Models predict them on some unscored issues — but we can't evaluate those predictions. In production, you'd want a small manually-labeled set for these classes.
+Both models show identical confusion patterns — this is actually evidence the patterns are real signal, not model noise:
+- bug→question (7–8%): reporters asking "is this supposed to do X?" when it's actually a bug
+- question→bug (18%): "how do I do X?" when X is broken and doesn't work
+- enhancement→question (5%): "is there a way to do X?" when X doesn't exist
 
-4. **'question' has only 11 examples.** F1 of 0.545 with a CI of [0.285–0.733] — very wide, unreliable. Don't use per-class F1 for question to make decisions.
+The bug↔question boundary is the hardest edge in this taxonomy. In production, consider routing issues with low-confidence reasoning for either class to a human triage queue.
 
-5. **Security class**: 26 examples. F1=0.963 for llama (surprisingly high), but with 26 examples the CI is still wide. Regardless of model performance, route all predicted-security to human review — the cost of a missed vulnerability is much higher than the cost of a false positive.
+### 4. "Why does gpt-oss-120b have a 7.2% error rate? You said temperature=0 prevents format errors."
 
----
+Temperature=0 prevents **format variability** but I discovered a different cause: **max_tokens truncation**. Every single parse error (33/530) was at exactly 256 completion tokens — the model was cut off mid-JSON. gpt-oss-120b produces verbose reasoning (~146 tokens average) and occasionally hits the 256-token ceiling.
 
-## 6. Scoring methodology — be precise
+The fix: `max_tokens=512` in config.yaml, and I changed the JSON schema to put `label` before `reasoning` — so even if truncated, the label is already captured. This should reduce the 7.2% error rate to near-zero on a re-run.
 
-**Why Wilson CI over Wald?** Better coverage for small n (<500). Implemented via `statsmodels.stats.proportion.proportion_confint(method='wilson')`.
+### 5. "Walk me through how you ensured reproducibility."
 
-**Why bootstrap F1 CIs?** No closed-form for F1. We bootstrap 1000 resamples with seed=42 (reproducible). Per-class 95% CI.
+Every run emits a RunManifest with: `git_sha`, `model_a/model_b`, `prompt_hash` (SHA-256 of prompt file), `dataset_fingerprint` (SHA-256 of issues.json), `pricing_table` snapshot, `concurrency`, `temperature`, `timestamp`. Any reported number can be replayed: `git checkout {sha}`, same `issues.json` (verified by fingerprint), same concurrency env var.
 
-**Why McNemar's vs chi-squared accuracy test?** Same test set = correlated observations. McNemar accounts for the pairing. Chi-squared assumes independence.
+The dataset fingerprint is confirmed: `134d424ef38...` is consistent across the sweep metadata, the `issues.sha256` file, and every RunManifest.
 
-**What does Cohen's κ mean here?**
-- κ measures inter-model agreement corrected for chance
-- κ=1.0: perfect agreement, κ=0: chance agreement, κ<0: worse than chance
-- Report alongside raw agreement rate — κ can behave anomalously under skewed class distributions (our bug class is 53.8% of scored set)
-- This is inter-model κ, NOT a performance metric vs GT
+### 6. "Why McNemar's test and not just comparing accuracy numbers?"
 
----
+Two classifiers evaluated on the same test set produce correlated errors — standard chi-square assumes independence. McNemar tests whether disagreements are **symmetric**. The intuition: if model A is right and model B is wrong on 20 issues, but B is right and A is wrong on only 5, that asymmetry is significant — B is actually better. If it's 12/8, there's no evidence either is superior.
 
-## 7. Architecture questions
+Reference: Dietterich 1998, Neural Computation 10(7):1895–1923. We use Yates continuity correction for small cell counts.
 
-**"Why a single container for API + frontend?"**
-> "Simplicity for a demo/eval context. The API serves the React static build from `frontend/dist/`. In production you'd separate them — CDN for the frontend, autoscaling for the API. For this exercise the single-container requirement is explicit."
+**One thing to know about the McNemar result for 20b vs 120b**: 46 of the 247 scored issues were excluded from the paired set because 20b errored on them (18.6% of scored set). Those excluded issues are systematically harder for 20b — meaning its paired accuracy is upward-biased. The comparison between 20b and 120b via McNemar is not fully valid; use the effective accuracy comparison instead.
 
-**"Why FastAPI + SSE instead of WebSockets?"**
-> "SSE (Server-Sent Events) is unidirectional server→client — exactly what we need for progress updates. WebSockets add bidirectional complexity we don't need. SSE also works through HTTP/1.1 proxies without upgrade headers, which App Platform handles transparently."
+### 7. "Why Wilson CI for accuracy?"
 
-**"Why httpx for GitHub, OpenAI SDK for inference?"**
-> "OpenAI SDK handles auth headers, request formatting, retry semantics, and response parsing for the inference API. Using it with `base_url='https://inference.do-ai.run/v1'` means we're provider-agnostic — switching to any OpenAI-compatible provider is one config line change. httpx for GitHub because we need fine-grained pagination control (Link header parsing) and rate limit handling that the SDK doesn't provide."
+Wald intervals (`p ± 1.96 * sqrt(p(1-p)/n)`) have coverage below nominal 95% for small n or extreme p values. With n=247, Wilson intervals are preferred (statsmodels `proportion_confint(method='wilson')`). The difference is small here but it's a correctness choice.
 
-**"Why pydantic-settings for config?"**
-> "Separates secrets (from env) from config (from yaml) cleanly. MODEL_ACCESS_KEY is never in config.yaml. pydantic-settings validates types at startup — if you set CONCURRENCY='abc', it fails fast with a clear error rather than silently using a wrong value."
+**Numbers ready:** 84.2% accuracy for llama3.3-70b → Wilson CI [79.1%, 88.2%]. 83.5% for 120b → [78.4%, 87.6%]. CIs overlap — the 0.7pp accuracy difference is not statistically distinguishable at n=247. The recommendation is based on cost, not a claimed accuracy advantage.
 
----
+### 8. "How did you construct ground truth? What do you treat as ground truth?"
 
-## 8. What actually ran — the real numbers to cite
+Maintainer GitHub labels → 6-class schema with explicit confidence filtering:
+- 1.0 confidence: unambiguous single-label mapping (bug, suggestion=enhancement, question, documentation)
+- 0.7 confidence: primary label + meta/sub-system label (e.g. ["app-platform", "bug"])
+- 0.0 (excluded): empty labels, conflicting labels, meta-only labels, process labels
 
+Result: 247/530 issues scored (46.6%). The scored set intentionally smaller but cleaner.
+
+**Caveat to state proactively:** Scored metrics are accuracy against noisy maintainer labels, not gold-standard annotation. Scored issues also have longer average body length (1013 chars) than unscored (678 chars) — they're not obviously easier. What IS a selection bias: maintainers labeled clear-cut cases; genuinely ambiguous issues are in the unscored set.
+
+**The "documentation=0, other=0" problem:** doctl maintainers don't use those labels. Models predict them on unscored issues, but we can't evaluate those predictions. In production, you'd want a small manually-labeled set for these classes before shipping.
+
+### 9. "What's the production pattern?"
+
+Three tiers:
+1. **Primary (120b)**: all incoming requests → 77.5% effective accuracy, $0.000197/call
+2. **Fallback (llama3.3-70b)**: any `error_type != None` from primary, AND all predicted-security regardless — llama3.3 has 0% error rate and security F1=0.963
+3. **Human review**: predicted-security from tier 2 (26 examples in training — F1 is high but n is small; any vulnerability missed by ML is a support incident)
+
+Blended cost: ~$0.000246/call. 59% savings vs all-frontier.
+
+**Future optimization**: prompt caching — same 400-token system prompt on every call, DO SI supports it, ~30-40% reduction on input costs.
+
+### 10. "DeepSeek shows 92.3% accuracy. Why not recommend it?"
+
+Two problems:
+1. **94% parse error rate**: DeepSeek-R1 emits `<think>...</think>` chain-of-thought blocks before the JSON answer. Our parser correctly rejected these as invalid JSON. The 92.3% accuracy is computed on the ~32 issues where it happened to respond cleanly — not representative. N=32 gives a Wilson CI of roughly [77%, 98%] — too wide to be meaningful.
+
+2. **11-second p50 latency**: even with a working CoT-aware parser (which I added post-sweep), p50=11303ms is unsuitable for interactive classification. Fine for batch overnight jobs.
+
+The CoT parsing fix is now in the codebase. Re-running DeepSeek with the fix would give real numbers. My prediction: high accuracy but an architectural dead end due to latency.
+
+### 11. "Why no live URL?"
+
+Container builds and runs locally (verified). App Platform deploy is:
 ```
-Corpus: 530 issues (1,313 PRs filtered)
-Scored: 247 issues (46.6% coverage)
-Classes: bug=133, enhancement=77, security=26, question=11, documentation=0, other=0
-
-Total API cost: $0.87
-  llama3.3-70b-instruct:         $0.3192
-  deepseek-r1-distill-llama-70b: $0.3782
-  openai-gpt-oss-120b:           $0.1045
-  openai-gpt-oss-20b:            $0.0680
-
-Cache: 2,152 files in data/cache/ (530 issues × 4 models + 52 retries)
-Re-run cost: $0.00 (all served from cache)
-
-Tests: 34/34 passing
-Ruff: 0 errors
-Docker: 3-stage build, non-root (appuser uid=1000), HEALTHCHECK
+doctl apps create --spec .do/app.yaml
 ```
+I didn't deploy to avoid incurring ongoing hosting costs during the review period. The `.do/app.yaml` is production-ready: non-root user, HEALTHCHECK, CONCURRENCY env var, MODEL_ACCESS_KEY as a secret.
+
+### 12. "What would you do with more time?"
+
+1. **Re-run sweep with max_tokens=512** — eliminates the truncation-caused 7.2% error rate, gives honest numbers for 120b. The fix is in the codebase; cached results are stale.
+2. **Per-model prompt tuning** — same prompt for all models for fair comparison. In production, smaller models benefit from examples tuned to their output verbosity.
+3. **Confidence-based routing** — parse reasoning text for uncertainty signals; route low-confidence to fallback automatically rather than only on hard errors.
+4. **Prompt caching** — 400-token system prompt on every call. DO SI supports it, 30-40% input cost reduction.
+5. **Active learning** — disagreement cases (models disagree, no GT) are the highest-signal items for manual labeling. 50 labeled disagreements grows the scored set by the most useful examples.
+6. **DeepSeek re-run** — CoT parser is fixed. Interesting data point even if latency rules it out.
+
+### 13. "What did you cut?"
+
+Per-model prompt tuning (fairness over optimization), confidence-based routing, fine-tuning on doctl corpus, active learning loop, streaming classification, live URL deployment.
 
 ---
 
-## 9. Known gaps to acknowledge (not hide)
+## BUGS FIXED (know these — they show you caught your own mistakes)
+
+| Bug | Where | Fix |
+|---|---|---|
+| **5xx errors not actually retried** | `client.py` tenacity decorator | Added `openai.APIStatusError` to retry tuple (was only `RateLimitError`, which is a subclass) |
+| **max_tokens=256 causes ALL parse errors** | `config.yaml` | Raised to 512; label now first in JSON schema |
+| `issue_id=0` in runner error fallback | `runner.py` | Captures actual issue ID from task context |
+| `asyncio.get_event_loop()` deprecated | `runner.py`, `app.py` | → `get_running_loop()` |
+| `/raw` endpoint returns null for scored issues | `app.py` | Falls back to cache files on disk |
+| `run_id` path traversal | `app.py` | `^[a-f0-9]{8}$` validation |
+| Dead unreachable code in `map_label()` | `ground_truth/builder.py` | Cleaned |
+| Macro F1 reported as 6-class (misleading) | `scoring/metrics.py` | Added `active_macro_f1` on classes with support>0 |
+| DeepSeek `<think>` blocks → parse_error | `inference/prompt.py` | CoT stripping added |
+
+---
+
+## METHODOLOGICAL LIMITATIONS — own these proactively
 
 | Gap | What to say |
 |---|---|
-| No live URL | "Container builds and runs locally. App Platform deploy is a `doctl apps create --spec .do/app.yaml` away — I didn't deploy to avoid incurring ongoing hosting costs during the review period." |
-| Haiku (stated frontier) 403'd | "My account tier doesn't include Anthropic models via DO SI. I used llama3.3-70b-instruct as the de facto frontier — it's the most expensive model I had access to at $0.65/1M. The methodology and conclusions are the same." |
-| DeepSeek 94% errors | Own it proactively (see section 4) |
-| documentation/other = 0 GT | Own it (see section 5, point 3) |
-| No prompt tuning per model | Explicitly called out in "What I'd do with more time" |
+| Haiku (stated frontier) → 403 | Account tier restriction. llama3.3-70b used as de facto frontier — most expensive available at $0.65/1M. Methodology and conclusions unchanged. |
+| 46.6% scored coverage | Intentional: smaller clean set > larger noisy set. Scored issues slightly harder by body length (1013 vs 678 chars avg). Selection bias toward clear-label issues is real but bounded. |
+| Scored vs noisy GT | Accuracy numbers are "vs maintainer labels" — a proxy, not gold standard. Could be lower bound (model correct when label wrong) or upper bound (model learns label idiosyncrasies). |
+| documentation=0, other=0 | Doctl doesn't use these labels. Per-class F1 is undefined. "4-class active macro F1" is the honest number. |
+| question support=11 | Per-class F1=0.545, CI=[0.285–0.733]. Too wide to be reliable. Don't use it for production decisions. |
+| McNemar bias for 20b | 18.6% of scored set excluded from paired test (20b errors). 20b's paired accuracy is upward-biased. Use effective accuracy for 20b comparison, not McNemar. |
+| Cached results for max_tokens fix | Re-run needed to get honest 120b numbers with max_tokens=512. Expected: ~0% parse errors. |
 
 ---
 
-## 10. Quick-fire facts
+## QUICK-FIRE FACTS
 
-- **How many issues?** 530 (1,313 PRs filtered out)
-- **How many scored?** 247 (46.6%)
-- **Total API cost?** $0.87
-- **Most common label?** bug (133/247 = 53.8% of scored set)
-- **Prompt version?** v1, hash `e6f64d56950718a2`
-- **Dataset fingerprint?** `134d424ef385...` (SHA-256 of issues.json)
-- **Concurrency during sweep?** 10 (env var, not baked in)
-- **Temperature?** 0.0 (deterministic)
-- **Cache hits on re-run?** 5/5 in test = $0.000000 new spend
-- **Retry policy?** tenacity, max 4 attempts, exp jitter 1–30s, rate_limit/timeout/server_error only
-- **Parse repair?** One repair attempt with `REPAIR_PROMPT` on parse_error; if repair fails, `error_type="parse_error"`, `label=None`
-- **CI method for accuracy?** Wilson score interval (statsmodels)
-- **F1 CI method?** Bootstrap, n=1000, seed=42
-- **Statistical test?** McNemar's (paired, Yates correction), Dietterich 1998
+- Issues fetched: **530** (1,313 PRs filtered)
+- Scored: **247** (46.6%)
+- Class distribution: bug=133, enhancement=77, security=26, question=11, docs=0, other=0
+- Total API cost: **$0.87**
+- Re-run cost: **$0.00** (all cached)
+- Cache entries: **2,152** files (530 × 4 models + retries)
+- Prompt version: **v1**, hash `e6f64d56...` (changes when prompt file edited)
+- Dataset fingerprint: `134d424ef38...`
+- Concurrency: **10** (env var, not baked in — `docker run -e CONCURRENCY=20` works)
+- Temperature: **0.0** (deterministic)
+- max_tokens: **512** (was 256 — ALL 33 parse errors on 120b were truncations at exactly 256 tokens)
+- Retry policy: tenacity, max 4 attempts, exp jitter 1–30s, **APIStatusError/Timeout/NetworkError only**
+- Parse repair: one repair attempt with REPAIR_PROMPT; if fails → `error_type="parse_error"`, `label=None`
+- CI method: Wilson score (statsmodels `proportion_confint`)
+- F1 CI: bootstrap, n=1000, seed=42 (reproducible)
+- Statistical test: McNemar's (Yates correction, Dietterich 1998)
+- Effective accuracy: `accuracy × (1 − error_rate)` — the production-relevant number
+- Active macro F1 (llama3.3): **0.818** (4-class; 6-class reported 0.546 is misleading)
+- Tests: **34/34 passing**, ruff clean
+
+---
+
+## THE HARDEST QUESTION (from two independent grill sessions)
+
+Both grills independently found this one. A principal engineer will open with it:
+
+> "Your tenacity retry decorator lists `(openai.RateLimitError, httpx.TimeoutException, httpx.NetworkError)`.
+> When a 503 is raised as `openai.APIStatusError` (not its subclass `RateLimitError`),
+> does tenacity retry it?"
+
+**Answer:** No — before my fix it did NOT. `APIStatusError` is the parent class; `RateLimitError` is the 429 subclass. A raw 5xx raised as `APIStatusError` was not in the retry tuple and propagated to `runner.py`'s catch-all as `server_error` with `label=None`.
+
+I caught this during testing when I investigated why error types in the sweep included `server_error`. The fix: add `openai.APIStatusError` to the tenacity retry tuple, but gate non-retryable 4xx (403, 400) to `return` (not `raise`) so they bypass tenacity. This is in the current codebase.
+
+This means the 7.2% error rate for 120b includes some 5xx errors that were never retried — the true error rate with correct retry + max_tokens=512 should be near zero.

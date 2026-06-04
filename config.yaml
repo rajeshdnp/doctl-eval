@@ -9,7 +9,11 @@ models:
 
 inference:
   temperature: 0.0   # Deterministic outputs. At higher temp, format error rate spikes.
-  max_tokens: 256    # Labels + short reasoning. 256 is generous; keeps costs predictable.
+  max_tokens: 512    # Increased from 256: 120b produces verbose reasoning (~146 tokens avg),
+                     # and truncation at 256 caused ALL 33 parse errors (every error was exactly
+                     # 256 tokens — max_tokens hit). 512 costs ~$0.00004 extra per call vs the
+                     # benefit of eliminating a 7.2% error rate. Label-first schema also guards
+                     # against truncation: label is emitted before reasoning.
   prompt_version: "v1"
   concurrency: 10    # Runtime override via CONCURRENCY env var
 

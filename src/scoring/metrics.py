@@ -150,6 +150,19 @@ def compute_model_metrics(
     micro_f1 = float(report.get("micro avg", {}).get("f1-score", 0.0))
     weighted_f1 = float(report.get("weighted avg", {}).get("f1-score", 0.0))
 
+    # Honest macro F1: recompute on active classes only (support > 0).
+    # The 6-class macro F1 includes documentation and other which have 0 support in
+    # doctl's label set. sklearn assigns F1=0.0 to those classes, which depresses macro
+    # F1 by ~0.27 (0.546 reported vs 0.818 honest). When citing macro F1, always qualify:
+    # "4-class macro F1 (documentation and other have 0 ground truth examples in doctl)".
+    active_labels = [
+        label for label in ALL_LABELS
+        if int(report.get(label, {}).get("support", 0)) > 0
+    ]
+    active_f1s = [float(report.get(label, {}).get("f1-score", 0.0)) for label in active_labels]
+    active_macro_f1 = float(sum(active_f1s) / len(active_f1s)) if active_f1s else 0.0
+    n_active_classes = len(active_labels)
+
     # Confusion matrix
     cm = confusion_matrix(y_true, y_pred, labels=ALL_LABELS)
     cm_raw: dict[str, dict[str, int]] = {}
@@ -188,7 +201,9 @@ def compute_model_metrics(
         "overall_accuracy": accuracy,
         "accuracy_ci": accuracy_ci.model_dump(),
         "per_class": {k: v.model_dump() for k, v in per_class.items()},
-        "macro_f1": macro_f1,
+        "macro_f1": macro_f1,            # 6-class (includes 0-support docs/other) — depressed
+        "active_macro_f1": active_macro_f1,  # honest N-class macro F1 on classes with support>0
+        "n_active_classes": n_active_classes,
         "micro_f1": micro_f1,
         "weighted_f1": weighted_f1,
         "confusion_matrix_raw": cm_raw,

@@ -24,17 +24,19 @@ panic: runtime error: nil pointer dereference
 goroutine 1 [running]:
 main.(*RunCommandF).Run(...)
 
-{"reasoning": "The issue describes a panic (crash) in doctl's list command. The reporter encountered unexpected behavior — a nil pointer dereference — that should not occur under normal operation. This is an unambiguous bug.", "label": "bug"}
+{"label": "bug", "reasoning": "The issue describes a panic (crash) in doctl's list command. The reporter encountered unexpected behavior — a nil pointer dereference — that should not occur under normal operation. This is an unambiguous bug."}
 
 Example 2 (enhancement):
 Issue #2103: Add --output json flag to doctl compute domain list
 
 Currently doctl compute domain list only outputs a table. It would be useful to have a --output json flag similar to other doctl commands so we can pipe the output to jq for automation.
 
-{"reasoning": "The reporter is requesting new functionality — adding a JSON output flag to an existing command. There is no defect reported; the current behavior works as designed. This is a feature/enhancement request.", "label": "enhancement"}
+{"label": "enhancement", "reasoning": "The reporter is requesting new functionality — adding a JSON output flag to an existing command. There is no defect reported; the current behavior works as designed. This is a feature/enhancement request."}
 
 OUTPUT FORMAT:
 Respond with ONLY valid JSON in this exact schema — no markdown, no code fences, no preamble:
-{"reasoning": "One to two sentences explaining your classification.", "label": "bug"}
+{"label": "bug", "reasoning": "One to two sentences explaining your classification."}
+
+IMPORTANT: Put the label field FIRST. This ensures the classification is captured even if the response is cut short.
 
 Issue to classify:

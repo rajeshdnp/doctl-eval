@@ -110,10 +110,14 @@ class InferenceClient:
             return await self._call_with_retry(issue, cache_file)
 
     @retry(
-        # Only retry on transient network/server errors
+        # Retry on transient errors ONLY.
+        # IMPORTANT: openai.RateLimitError (429) is a subclass of openai.APIStatusError,
+        # but a raw 5xx response is raised as openai.APIStatusError directly — NOT as a
+        # subclass. We must include APIStatusError to catch 5xx, but we use a predicate
+        # to skip non-retryable 4xx (other than 429). See _is_retryable() below.
         retry=retry_if_exception_type(
             (
-                openai.RateLimitError,
+                openai.APIStatusError,   # covers 429 (via RateLimitError subclass) and 5xx
                 httpx.TimeoutException,
                 httpx.NetworkError,
             )
@@ -165,19 +169,22 @@ class InferenceClient:
                 if retry_after:
                     await asyncio.sleep(float(retry_after))
                 error_type = "rate_limit"
-                raise  # Let tenacity retry
+                raise  # Caught by tenacity (APIStatusError in retry tuple)
             elif exc.status_code >= 500:
+                # Transient server error — retried by tenacity
                 error_type = "server_error"
-                raise  # Let tenacity retry
+                raise  # Caught by tenacity (APIStatusError in retry tuple)
             else:
-                # 4xx other than 429 — our problem, don't retry
-                error_type = "server_error"
+                # 4xx other than 429 (e.g. 403 auth, 400 bad request) — NOT retryable.
+                # We must NOT re-raise here: tenacity would catch APIStatusError and retry it.
+                # Instead: record as non-retryable error and return without raising.
+                error_type = "server_error"  # 4xx — our config/auth problem
                 latency_ms = (time.monotonic() - start) * 1000
                 result = self._make_error_result(
                     issue, raw_text, 0, 0, 0.0, latency_ms, error_type
                 )
                 cache_file.write_text(result.model_dump_json())
-                return result
+                return result  # Return (not raise) to bypass tenacity retry
         except httpx.TimeoutException:
             error_type = "timeout"
             raise  # Let tenacity retry
