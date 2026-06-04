@@ -24,7 +24,8 @@ htmlcov/
 
 # Node
 node_modules/
-frontend/dist/
+# frontend/dist/ is committed so App Platform can COPY it during Docker build
+# (App Platform build environment doesn't run npm — it only runs Docker)
 
 # OS
 .DS_Store
