@@ -1,7 +1,11 @@
 models:
-  sweep: []          # Populated in Stage 1 after verifying live slugs
-  default_a: ""
-  default_b: ""
+  sweep:
+    - llama3.3-70b-instruct
+    - openai-gpt-oss-120b
+    - openai-gpt-oss-20b
+    - deepseek-r1-distill-llama-70b
+  default_a: "openai-gpt-oss-120b"
+  default_b: "openai-gpt-oss-20b"
 
 inference:
   temperature: 0.0   # Deterministic outputs. At higher temp, format error rate spikes.
@@ -29,3 +33,6 @@ pricing:
   openai-gpt-oss-20b:
     input: 0.05
     output: 0.45
+  deepseek-r1-distill-llama-70b:
+    input: 0.65
+    output: 0.65

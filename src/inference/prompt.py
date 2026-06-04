@@ -98,6 +98,11 @@ class ParseError(Exception):
 # Regex to strip markdown code fences (```json ... ``` or ``` ... ```)
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
 
+# Regex to strip DeepSeek/reasoning-model chain-of-thought blocks.
+# Reasoning models like deepseek-r1 emit <think>...</think> before the JSON answer.
+# We strip these so the JSON parser can find the actual output.
+_COT_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+
 
 def parse_response(raw_text: str) -> tuple[LabelEnum, str]:
     """
@@ -119,6 +124,11 @@ def parse_response(raw_text: str) -> tuple[LabelEnum, str]:
     rate metrics should capture. The repair prompt handles the one-shot recovery.
     """
     text = raw_text.strip()
+
+    # Strip reasoning model chain-of-thought blocks (<think>...</think>).
+    # DeepSeek-R1 and similar reasoning models emit these before the JSON answer.
+    # We remove them so the JSON parser finds the actual output.
+    text = _COT_RE.sub("", text).strip()
 
     # Strip markdown code fences if present
     fence_match = _FENCE_RE.match(text)

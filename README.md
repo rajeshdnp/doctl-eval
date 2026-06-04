@@ -2,20 +2,31 @@
 
 ## Recommendation
 
-> **Based on evaluation of 4 models across ~500 GitHub issues from digitalocean/doctl:**
+> **Based on evaluation of 4 models across 530 GitHub issues from digitalocean/doctl (247 scored):**
 >
-> *[This section will be populated with real numbers after running the sweep.]*
+> **Run `openai-gpt-oss-120b` in production as the primary classifier.**
 >
-> **Run `llama3.3-70b-instruct` in production** (pending sweep confirmation).
+> - **83.5% accuracy** vs frontier baseline (llama3.3-70b) at **84.2%** — only 0.7% accuracy loss
+> - **67% cheaper per call** ($0.000197 vs $0.000602)
+> - **Cost per correct classification: $0.00024 vs $0.00075** — 68% savings
+> - **7.2% error rate** (vs 0% frontier) — acceptable for a primary + fallback architecture
+> - At 1M issues/month: saves ~$405/month vs llama3.3-70b
 >
-> - Achieves comparable accuracy to Claude Haiku at a fraction of the cost
-> - Cost per correct classification is the key business metric — see Sweep Overview tab
-> - At 1M issues/month: saves ~$XX,XXX vs the current frontier model
+> **Production pattern**: Use `openai-gpt-oss-120b` as the primary classifier. Route
+> predicted-`security`, any `parse_error` responses, and cases where reasoning
+> shows uncertainty to `llama3.3-70b-instruct` as a fallback. This two-tier pattern
+> retains 99.3% of frontier accuracy while spending 67% less on the majority of traffic.
 >
-> **Production pattern**: Use the recommended model as the primary classifier.
-> Route predicted-`security` and any response where the model's reasoning shows
-> uncertainty to human review or the frontier model as a fallback. This two-tier
-> pattern retains most accuracy while spending significantly less than all-frontier.
+> **Why not `openai-gpt-oss-20b`?** It achieves the lowest cost/correct ($0.00015) and
+> highest accuracy (87.7%), but its 22.5% error rate means 1 in 4 requests fails to
+> return a valid label. At production volume, a 22.5% fallback rate to the frontier
+> eliminates the cost advantage. Use it only if you can tolerate high fallback volume.
+>
+> **Why not `deepseek-r1-distill-llama-70b`?** It is a reasoning model that emits
+> chain-of-thought `<think>...</think>` blocks before JSON output. Our parser
+> correctly rejects these as `parse_error` (94% error rate). Its reported 92.3%
+> accuracy is computed on the ~32/530 issues where it happened to respond cleanly —
+> not representative. To use DeepSeek, a CoT-aware parser is required.
 
 ## Live App
 
@@ -25,24 +36,26 @@ https://YOUR_APP.ondigitalocean.app
 
 ## Model Evaluation Summary
 
-*Populated after running `python scripts/run_sweep.py`*
+530 issues (247 scored against maintainer labels). Sorted by cost/correct ↑.
 
-| Model | Accuracy | Macro-F1 | Cost/Call | Cost/Correct ⭐ | p50ms | p95ms |
-|-------|----------|----------|-----------|----------------|-------|-------|
-| anthropic-claude-haiku-4.5 (frontier) | — | — | — | — | — | — |
-| llama3.3-70b-instruct (recommended) | — | — | — | — | — | — |
-| openai-gpt-oss-120b | — | — | — | — | — | — |
-| openai-gpt-oss-20b | — | — | — | — | — | — |
+| Model | Accuracy | Macro-F1 | Cost/Call | Cost/Correct ⭐ | p50ms | p95ms | Error% |
+|-------|----------|----------|-----------|----------------|-------|-------|--------|
+| openai-gpt-oss-20b | **87.7%** | 0.561 | $0.000128 | **$0.00015** | 2110ms | 3635ms | 22.5% |
+| openai-gpt-oss-120b ← **recommended** | 83.5% | 0.542 | $0.000197 | $0.00024 | 2194ms | 3912ms | 7.2% |
+| llama3.3-70b-instruct ← frontier | 84.2% | 0.546 | $0.000602 | $0.00075 | 3412ms | 4530ms | 0.0% |
+| deepseek-r1-distill-llama-70b* | 92.3%* | 0.622* | $0.000714 | $0.00076 | 11303ms | 12251ms | 94.0% |
+
+*DeepSeek: 94% parse error rate — reasoning model outputs `<think>` blocks before JSON. The 92.3% accuracy is computed on the ~6% of issues that responded cleanly. Exclude from fair comparison.
 
 ## Cost Extrapolation
 
-*Based on avg tokens/issue × per-token rates from config.yaml pricing table.*
+Based on avg tokens/issue × per-token rates. Recommended (`openai-gpt-oss-120b`) vs frontier (`llama3.3-70b-instruct`).
 
 | Monthly Volume | Recommended | Frontier | Savings |
 |----------------|-------------|----------|---------|
-| 100K issues | $— | $— | $— (—%) |
-| 1M issues | $— | $— | $— (—%) |
-| 10M issues | $— | $— | $— (—%) |
+| 100K issues | $19.70 | $60.20 | $40.50 (67%) |
+| 1M issues | $197 | $602 | $405 (67%) |
+| 10M issues | $1,970 | $6,020 | $4,050 (67%) |
 
 ## Quick Start
 
