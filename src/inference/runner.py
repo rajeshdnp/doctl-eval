@@ -79,26 +79,33 @@ async def run_eval(
     """
     client = InferenceClient(model, config)
     semaphore = asyncio.Semaphore(config.concurrency)
-    wall_start = asyncio.get_event_loop().time()
+    loop = asyncio.get_running_loop()  # get_running_loop() is correct; get_event_loop() is deprecated in 3.10+
+    wall_start = loop.time()
 
     results: list[Classification] = []
     completed = 0
     current_cost = 0.0
 
-    tasks = [
-        asyncio.create_task(client.classify(issue, semaphore))
+    # Build tasks with their associated issue objects so we can recover issue_id on failure
+    issue_tasks = [
+        (issue, asyncio.create_task(client.classify(issue, semaphore)))
         for issue in issues
     ]
+    task_to_issue = {task: issue for issue, task in issue_tasks}
+    tasks = [task for _, task in issue_tasks]
 
     for future in asyncio.as_completed(tasks):
+        originating_issue = task_to_issue.get(future)
         try:
             result = await future
         except Exception as exc:
             # Catch-all for unexpected errors not handled in client.py
             # (should be rare since client handles rate limits, timeouts, parse errors)
-            logger.error(f"Unexpected error classifying issue: {exc}")
+            # Use the actual issue_id so the error result can be matched back to its issue
+            actual_issue_id = originating_issue.id if originating_issue else 0
+            logger.error(f"Unexpected error classifying issue {actual_issue_id}: {exc}")
             result = Classification(
-                issue_id=0,
+                issue_id=actual_issue_id,
                 model=model,
                 prompt_version=PROMPT_VERSION,
                 label=None,
@@ -120,16 +127,7 @@ async def run_eval(
         if on_progress:
             on_progress(completed, len(issues), model, current_cost)
 
-    wall_seconds = asyncio.get_event_loop().time() - wall_start
-
-    # Operational metrics for manifest (scored_issues filled in by scoring module)
-    successful = [r for r in results if r.label is not None]
-    non_cached = [r for r in successful if not r.from_cache]
-    latencies = [r.latency_ms for r in non_cached]
-
-    float(np.percentile(latencies, 50)) if latencies else 0.0
-    float(np.percentile(latencies, 95)) if latencies else 0.0
-    len(non_cached) / wall_seconds if wall_seconds > 0 and non_cached else 0.0
+    wall_seconds = loop.time() - wall_start
 
     manifest = RunManifest(
         run_id=str(uuid.uuid4())[:8],

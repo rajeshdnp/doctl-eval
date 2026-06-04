@@ -116,25 +116,23 @@ def map_label(raw_labels: list[str]) -> tuple[LabelEnum | None, float]:
     # has semantic overlap with other categories.
     content_labels = [lbl for lbl in normalized if lbl not in META_LABELS and lbl not in PROCESS_LABELS]
 
-    if "bug" in normalized and normalized == ["bug"]:
-        # Exactly one label: unambiguous bug
-        return LabelEnum.bug, 1.0
-
     if "bug" in normalized and len(content_labels) == 1 and content_labels == ["bug"]:
-        # Bug plus one or more meta/process labels (e.g., ["app-platform", "bug"]).
-        # We retain bug signal but reduce confidence to 0.7 because the presence of
-        # a sub-system label suggests the maintainer added routing context that might
-        # affect the semantics of what "bug" means in this sub-system.
-        # (Strictly, app-platform bugs behave the same as generic bugs for our task,
-        # but we're being conservative about noisy maintainer labels.)
-        has_meta = any(lbl in META_LABELS or lbl in PROCESS_LABELS for lbl in normalized if lbl != "bug")
+        # Bug present and, after stripping meta/process labels, bug is the only content label.
+        # - normalized == ["bug"]: pure unambiguous bug → 1.0
+        # - normalized has meta labels too (e.g. ["app-platform","bug"]): retain bug at 0.7
+        #   because the sub-system label adds routing context that might affect semantics.
+        has_meta = any(
+            lbl in META_LABELS or lbl in PROCESS_LABELS
+            for lbl in normalized if lbl != "bug"
+        )
         if has_meta:
             return LabelEnum.bug, 0.7
         return LabelEnum.bug, 1.0
 
     if "bug" in normalized and len(content_labels) <= 2:
+        # Bug + one unrecognized content label → still mostly-bug at 0.7
         non_bug = [lbl for lbl in content_labels if lbl != "bug"]
-        if not non_bug or all(lbl in META_LABELS for lbl in non_bug):
+        if not non_bug:
             return LabelEnum.bug, 0.7
 
     if "suggestion" in normalized and len(content_labels) <= 2:

@@ -105,9 +105,16 @@ def build_model_summary(
     ops: dict[str, Any],
 ) -> ModelSummary:
     """Combine scoring metrics + operational metrics into a ModelSummary."""
+    accuracy = metrics.get("overall_accuracy", 0.0)
+    error_rate = ops.get("error_rate", 0.0)
+    # effective_accuracy = accuracy × coverage: fraction of ALL submitted issues that get
+    # a correct label. This is the production-relevant number — not just accuracy on the
+    # subset that responded. A model with 88% accuracy and 22% error rate has 68% effective
+    # accuracy, not 88%.
+    effective_accuracy = accuracy * (1.0 - error_rate)
     return ModelSummary(
         model=model,
-        accuracy=metrics.get("overall_accuracy", 0.0),
+        accuracy=accuracy,
         macro_f1=metrics.get("macro_f1", 0.0),
         weighted_f1=metrics.get("weighted_f1", 0.0),
         avg_cost_usd=ops.get("avg_cost_per_call_usd", 0.0),
@@ -116,7 +123,8 @@ def build_model_summary(
         p50_ms=ops.get("p50_latency_ms", 0.0),
         p95_ms=ops.get("p95_latency_ms", 0.0),
         throughput_rps=ops.get("throughput_rps", 0.0),
-        error_rate=ops.get("error_rate", 0.0),
+        error_rate=error_rate,
+        effective_accuracy=effective_accuracy,
     )
 
 
@@ -197,7 +205,8 @@ def print_comparison_table(summaries: list[ModelSummary], recommendation: SweepR
         header_style="bold magenta",
     )
     table.add_column("Model", style="cyan", no_wrap=True)
-    table.add_column("Accuracy", justify="right")
+    table.add_column("Accuracy*", justify="right")
+    table.add_column("Effective Acc†", justify="right")
     table.add_column("Macro-F1", justify="right")
     table.add_column("Avg Cost/Call", justify="right")
     table.add_column("Cost/Correct ⭐", justify="right")
@@ -221,6 +230,7 @@ def print_comparison_table(summaries: list[ModelSummary], recommendation: SweepR
         table.add_row(
             s.model,
             f"{s.accuracy:.3f}",
+            f"{s.effective_accuracy:.3f}",
             f"{s.macro_f1:.3f}",
             f"${s.avg_cost_usd:.6f}",
             cpc_str,

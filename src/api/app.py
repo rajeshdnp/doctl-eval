@@ -238,8 +238,9 @@ async def run_evaluation(request: RunRequest) -> StreamingResponse:
     progress_queue: asyncio.Queue[dict] = asyncio.Queue()  # type: ignore[type-arg]
 
     def make_progress_cb(model: str) -> object:
+        loop = asyncio.get_running_loop()  # capture running loop; get_event_loop() deprecated in 3.10+
         def cb(completed: int, total: int, mdl: str, cost: float) -> None:
-            asyncio.get_event_loop().call_soon_threadsafe(
+            loop.call_soon_threadsafe(
                 progress_queue.put_nowait,
                 {
                     "type": "progress",
@@ -411,8 +412,19 @@ async def run_evaluation(request: RunRequest) -> StreamingResponse:
     )
 
 
+import re as _re
+_RUN_ID_RE = _re.compile(r"^[a-f0-9]{8}$")
+
+
+def _validate_run_id(run_id: str) -> None:
+    """Guard against path traversal: run_ids are 8 lowercase hex chars."""
+    if not _RUN_ID_RE.match(run_id):
+        raise HTTPException(status_code=400, detail="Invalid run_id format")
+
+
 @app.get("/api/results/{run_id}")
 async def get_results(run_id: str) -> dict:  # type: ignore[type-arg]
+    _validate_run_id(run_id)
     run_path = RUNS_DIR / f"{run_id}.json"
     if not run_path.exists():
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
@@ -421,12 +433,21 @@ async def get_results(run_id: str) -> dict:  # type: ignore[type-arg]
 
 @app.get("/api/results/{run_id}/issue/{issue_id}/raw")
 async def get_raw_output(run_id: str, issue_id: int) -> dict:  # type: ignore[type-arg]
-    """Return raw model outputs for a specific issue in a run (for debugging)."""
+    """Return raw model outputs for a specific issue in a run (for debugging).
+
+    Searches both the unscored predictions list (stored inline) AND the per-model
+    cache files on disk (for scored issues, which are not stored inline in run_data
+    to keep the run JSON a manageable size).
+    """
+    _validate_run_id(run_id)
     run_path = RUNS_DIR / f"{run_id}.json"
     if not run_path.exists():
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
 
     run_data = json.loads(run_path.read_text())
+    manifest = run_data.get("manifest", {})
+    model_a = manifest.get("model_a", "")
+    model_b = manifest.get("model_b", "")
 
     # Find issue
     issues = _load_issues()
@@ -434,28 +455,51 @@ async def get_raw_output(run_id: str, issue_id: int) -> dict:  # type: ignore[ty
     if not issue:
         raise HTTPException(status_code=404, detail=f"Issue {issue_id} not found in corpus")
 
-    # Find raw outputs in scored predictions
-    run_data.get("scored", {}).get("model_a", {})
-    run_data.get("scored", {}).get("model_b", {})
-
-    # Search in unscored too
     a_raw = None
     b_raw = None
+    a_label = None
+    b_label = None
 
-    for section in ["scored", "unscored"]:
-        for model_key, preds_key in [("model_a", "model_a_predictions"), ("model_b", "model_b_predictions")]:
-            preds = run_data.get(section, {}).get(preds_key, [])
-            for clf in preds:
-                if clf.get("issue_id") == issue_id:
-                    if model_key == "model_a":
-                        a_raw = clf.get("raw_response")
-                    else:
-                        b_raw = clf.get("raw_response")
+    # Step 1: check inline unscored predictions
+    for model_key, preds_key in [("model_a", "model_a_predictions"), ("model_b", "model_b_predictions")]:
+        preds = run_data.get("unscored", {}).get(preds_key, [])
+        for clf in preds:
+            if clf.get("issue_id") == issue_id:
+                if model_key == "model_a":
+                    a_raw = clf.get("raw_response")
+                    a_label = clf.get("label")
+                else:
+                    b_raw = clf.get("raw_response")
+                    b_label = clf.get("label")
+
+    # Step 2: fall back to cache files for scored issues (not stored inline)
+    from src.inference.prompt import get_prompt_hash
+    prompt_hash = get_prompt_hash()
+    cache_dir = Path("data/cache")
+
+    for model_slug, target_raw, target_label, which in [
+        (model_a, a_raw, a_label, "a"),
+        (model_b, b_raw, b_label, "b"),
+    ]:
+        if target_raw is not None:
+            continue  # already found above
+        slug_safe = model_slug.replace("/", "-").replace(":", "_")
+        cache_file = cache_dir / f"{issue_id}__{slug_safe}__{prompt_hash}.json"
+        if cache_file.exists():
+            cached = json.loads(cache_file.read_text())
+            if which == "a":
+                a_raw = cached.get("raw_response")
+                a_label = cached.get("label")
+            else:
+                b_raw = cached.get("raw_response")
+                b_label = cached.get("label")
 
     return {
         "issue": issue.model_dump(),
         "model_a_raw": a_raw,
         "model_b_raw": b_raw,
+        "model_a_label": a_label,
+        "model_b_label": b_label,
     }
 
 

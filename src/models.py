@@ -108,7 +108,7 @@ class ModelSummary(BaseModel):
     """
 
     model: str
-    accuracy: float
+    accuracy: float  # accuracy on issues where label != None (excludes errored calls)
     macro_f1: float
     weighted_f1: float
     avg_cost_usd: float  # Per call, averaged over all issues
@@ -118,6 +118,7 @@ class ModelSummary(BaseModel):
     p95_ms: float
     throughput_rps: float
     error_rate: float
+    effective_accuracy: float = 0.0  # accuracy × (1 − error_rate): fraction of ALL submitted issues that get a correct label
 
 
 class SweepMetadata(BaseModel):

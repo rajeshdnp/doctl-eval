@@ -17,10 +17,11 @@
 > shows uncertainty to `llama3.3-70b-instruct` as a fallback. This two-tier pattern
 > retains 99.3% of frontier accuracy while spending 67% less on the majority of traffic.
 >
-> **Why not `openai-gpt-oss-20b`?** It achieves the lowest cost/correct ($0.00015) and
-> highest accuracy (87.7%), but its 22.5% error rate means 1 in 4 requests fails to
-> return a valid label. At production volume, a 22.5% fallback rate to the frontier
-> eliminates the cost advantage. Use it only if you can tolerate high fallback volume.
+> **Why not `openai-gpt-oss-20b`?** Its raw accuracy (87.7%) looks best, but its
+> **effective accuracy is only 68%** — 22.5% of requests return no label.
+> In a primary+fallback architecture (20b → llama3.3-70b on errors), the blended cost is:
+> 0.775 × $0.000128 + 0.225 × $0.000602 = **$0.000235/call** — which is *more expensive*
+> than pure gpt-oss-120b at $0.000197/call. The 120b is strictly better for a primary classifier.
 >
 > **Why not `deepseek-r1-distill-llama-70b`?** It is a reasoning model that emits
 > chain-of-thought `<think>...</think>` blocks before JSON output. Our parser
@@ -38,14 +39,17 @@ https://YOUR_APP.ondigitalocean.app
 
 530 issues (247 scored against maintainer labels). Sorted by cost/correct ↑.
 
-| Model | Accuracy | Macro-F1 | Cost/Call | Cost/Correct ⭐ | p50ms | p95ms | Error% |
-|-------|----------|----------|-----------|----------------|-------|-------|--------|
-| openai-gpt-oss-20b | **87.7%** | 0.561 | $0.000128 | **$0.00015** | 2110ms | 3635ms | 22.5% |
-| openai-gpt-oss-120b ← **recommended** | 83.5% | 0.542 | $0.000197 | $0.00024 | 2194ms | 3912ms | 7.2% |
-| llama3.3-70b-instruct ← frontier | 84.2% | 0.546 | $0.000602 | $0.00075 | 3412ms | 4530ms | 0.0% |
-| deepseek-r1-distill-llama-70b* | 92.3%* | 0.622* | $0.000714 | $0.00076 | 11303ms | 12251ms | 94.0% |
+*Accuracy = on issues the model successfully classified (label != None).
+†Effective Accuracy = accuracy × (1 − error_rate) — fraction of ALL submitted issues that get a correct label. **This is the production-relevant number.***
 
-*DeepSeek: 94% parse error rate — reasoning model outputs `<think>` blocks before JSON. The 92.3% accuracy is computed on the ~6% of issues that responded cleanly. Exclude from fair comparison.
+| Model | Accuracy* | Eff. Acc.† | Macro-F1 | Cost/Call | Cost/Correct ⭐ | p50ms | p95ms | Error% |
+|-------|-----------|-----------|----------|-----------|----------------|-------|-------|--------|
+| openai-gpt-oss-20b | 87.7% | **68.0%** | 0.561 | $0.000128 | **$0.00015** | 2110ms | 3635ms | 22.5% |
+| openai-gpt-oss-120b ← **recommended** | 83.5% | **77.5%** | 0.542 | $0.000197 | $0.00024 | 2194ms | 3912ms | 7.2% |
+| llama3.3-70b-instruct ← frontier | 84.2% | **84.2%** | 0.546 | $0.000602 | $0.00075 | 3412ms | 4530ms | 0.0% |
+| deepseek-r1 ⚠️ | (excluded) | — | — | — | — | 11303ms | 12251ms | 94.0% |
+
+⚠️ DeepSeek-R1: 94% parse error rate — reasoning model emits `<think>...</think>` chain-of-thought before JSON. Parser fix applied post-sweep; cached results still show errors. 11s p50 latency rules it out for real-time use regardless.
 
 ## Cost Extrapolation
 
