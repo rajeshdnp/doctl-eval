@@ -31,9 +31,7 @@
 
 ## Live App
 
-```
-https://YOUR_APP.ondigitalocean.app
-```
+**https://king-prawn-app-jcejb.ondigitalocean.app**
 
 ## Model Evaluation Summary
 
