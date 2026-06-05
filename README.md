@@ -9,7 +9,7 @@
 > - **83.5% accuracy** vs frontier baseline (llama3.3-70b) at **84.2%** — only 0.7% accuracy loss
 > - **67% cheaper per call** ($0.000197 vs $0.000602)
 > - **Cost per correct classification: $0.00024 vs $0.00075** — 68% savings
-> - **7.2% error rate** (vs 0% frontier) — acceptable for a primary + fallback architecture
+> - **2.1% error rate** (vs 0% frontier) — after max_tokens fix; down from 7.2%
 > - At 1M issues/month: saves ~$405/month vs llama3.3-70b
 >
 > **Production pattern**: Use `openai-gpt-oss-120b` as the primary classifier. Route
